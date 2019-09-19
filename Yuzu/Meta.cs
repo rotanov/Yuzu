@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -73,7 +73,17 @@ namespace Yuzu.Metadata
 		public readonly List<Item> Items = new List<Item>();
 		public readonly bool IsCompact;
 		public bool IsCopyable;
-		public object Default { get; private set; }
+		private object @default;
+		public object Default
+		{
+			get
+			{
+				if (@default == null) {
+					@default = Factory();
+				}
+				return @default;
+			}
+		}
 		public YuzuItemKind Must = YuzuItemKind.None;
 		public YuzuItemKind AllKind = YuzuItemKind.None;
 		public YuzuItemOptionality AllOptionality = YuzuItemOptionality.None;
@@ -172,8 +182,6 @@ namespace Yuzu.Metadata
 
 		private Func<object, object, bool> GetSerializeIf(Item item, CommonOptions options)
 		{
-			if (Default == null)
-				Default = Factory();
 			var d = item.GetValue(Default);
 			var icoll = Utils.GetICollection(item.Type);
 			if (d == null || icoll == null)

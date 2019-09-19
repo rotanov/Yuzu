@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Dynamic;
@@ -485,6 +485,9 @@ namespace Yuzu
 	public abstract class AbstractDeserializer
 	{
 		public CommonOptions Options = new CommonOptions();
+
+		// migration context; should be set from outside
+		public Migrations.MigrationContext MigrationContext;
 
 		public abstract object FromReader(object obj, BinaryReader reader);
 		public abstract object FromString(object obj, string source);

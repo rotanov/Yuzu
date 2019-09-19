@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 
 using Yuzu.Deserializer;
@@ -776,14 +777,44 @@ namespace Yuzu.Json
 						NullYuzuUnknownStorage.Instance : meta.GetUnknownStorage(obj);
 					storage.Clear();
 					int requiredCountActiual = 0;
+					var migrations = MigrationContext == null ? null : Migrations.Storage.GetMigrationsForInstance(obj, MigrationContext.Version).ToList();
+					var combinedInputs = migrations == null ? null : migrations.SelectMany(m => m.Inputs).Distinct();
+					(object Owner, List<Migrations.MigrationSpecification> Migrations, Dictionary<string, object> PathToValue) dstTuple = (null, null, null);
+					if (migrations != null && migrations.Any()) {
+						dstTuple.Owner = obj;
+						dstTuple.Migrations = migrations;
+						dstTuple.PathToValue = new Dictionary<string, object>();
+					}
 					while (name != "") {
 						Meta.Item yi;
+						var inputsStartingWithName = combinedInputs == null ? null : combinedInputs.Where(i => i.Parts[0] == name).ToList();
 						if (!meta.TagToItem.TryGetValue(name, out yi)) {
-							if (!Options.AllowUnknownFields)
-								throw Error("Unknown field '{0}'", name);
-							storage.Add(name, ReadAnyObject());
+							if (inputsStartingWithName != null && inputsStartingWithName.Any()) {
+								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
+								foreach (var i in inputsStartingWithName) {
+									dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(substituteObject));
+								}
+							} else {
+								if (!Options.AllowUnknownFields)
+									throw Error("Unknown field '{0}'", name);
+								storage.Add(name, ReadAnyObject());
+							}
 							name = GetNextName(false);
 							continue;
+						}
+						bool later = false;
+						if (inputsStartingWithName != null) {
+							if (inputsStartingWithName.Any() && yi.Type != inputsStartingWithName[0].Types[0]) {
+								// global unknown storage
+								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
+								foreach (var i in inputsStartingWithName) {
+									dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(substituteObject));
+								}
+								name = GetNextName(false);
+								continue;
+							} else {
+								later = true;
+							}
 						}
 						if (!yi.IsOptional)
 							requiredCountActiual += 1;
@@ -791,7 +822,25 @@ namespace Yuzu.Json
 							yi.SetValue(obj, ReadValueFunc(yi.Type)());
 						else
 							MergeValueFunc(yi.Type)(yi.GetValue(obj));
+						if (later) {
+							foreach (var i in inputsStartingWithName) {
+								dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(yi.GetValue(obj)));
+							}
+						}
 						name = GetNextName(false);
+					}
+					if (combinedInputs != null) {
+						foreach (var i in combinedInputs) {
+							if (i.IsDirectInput(MigrationContext.Version)) {
+								if (!dstTuple.PathToValue.ContainsKey(i.ToString())) {
+									var value = i.GetValueByPath(obj, false);
+									dstTuple.PathToValue.Add(i.ToString(), value);
+								}
+							}
+						}
+						if (dstTuple.Owner != null && dstTuple.Migrations != null && dstTuple.PathToValue != null && dstTuple.PathToValue.Any()) {
+							MigrationContext.MigrationTable.Add(dstTuple);
+						}
 					}
 					if (requiredCountActiual != meta.RequiredCount)
 						throw Error(

@@ -84,6 +84,7 @@
     <Compile Include="Yuzu\Grisu\GrisuDouble.cs" />
     <Compile Include="Yuzu\Grisu\PowersOfTenCache.cs" />
     <Compile Include="Yuzu\JsonHelpers.cs" />
+    <Compile Include="Yuzu\Migrations.cs" />
     <Compile Include="Yuzu\ReaderDeserializer.cs" />
     <Compile Include="Yuzu\Surrogates.cs" />
     <Compile Include="Yuzu\UnsafeReader.cs" />
