@@ -25,7 +25,6 @@ namespace Yuzu
 		public class MigrationSpecification
 		{
 			public int Version;
-			public Type ApplicableToType;
 			public Type InputType;
 			public Type OutputType;
 			public List<Path> Inputs;
@@ -91,7 +90,6 @@ namespace Yuzu
 			{
 				var aas = type.GetCustomAttributes(false);
 				var a = aas.Where(i => i is YuzuMigrationAttribute).Cast<YuzuMigrationAttribute>().First();
-				var targetType = a.Type;
 				var targetVersion = a.FromVersion;
 
 				var nestedTypes = type.GetNestedTypes();
@@ -146,11 +144,7 @@ namespace Yuzu
 
 				// TODO: validate input and output fields types
 
-				if (!migrations.TryGetValue(targetType, out List<MigrationSpecification> ll)) {
-					migrations.Add(targetType, ll = new List<MigrationSpecification>());
-				}
 				{
-					ms.ApplicableToType = targetType;
 					ms.InputType = inputType;
 					ms.OutputType = outputType;
 					ms.Version = targetVersion;
@@ -158,7 +152,13 @@ namespace Yuzu
 					ms.Outputs = outputs;
 					ms.MigrateMethodInfo = migrateMethodInfo;
 				}
-				ll.Add(ms);
+
+				foreach (var targetType in a.Types) {
+					if (!migrations.TryGetValue(targetType, out List<MigrationSpecification> l)) {
+						migrations.Add(targetType, l = new List<MigrationSpecification>());
+					}
+					l.Add(ms);
+				}
 			}
 		}
 
@@ -288,7 +288,9 @@ namespace Yuzu
 				Path = path;
 				Types = types;
 			}
-
+			public YuzuMigrationSourceAttribute(string path, Type type)
+				: this(path, new Type[] { type })
+			{ }
 			public readonly string Path;
 			public readonly Type[] Types;
 		}
@@ -302,6 +304,10 @@ namespace Yuzu
 				Types = types;
 			}
 
+			public YuzuMigrationDestinationAttribute(MigrationOutputType migrationOutputType, string path, Type type)
+				: this(migrationOutputType, path, new Type[] { type })
+			{ }
+
 			public readonly MigrationOutputType MigrationOutputType;
 			public readonly string Path;
 			public readonly Type[] Types;
@@ -309,13 +315,17 @@ namespace Yuzu
 
 		public class YuzuMigrationAttribute : System.Attribute
 		{
-			public YuzuMigrationAttribute(Type type, int fromVersion)
+			public YuzuMigrationAttribute(Type[] types, int fromVersion)
 			{
-				Type = type;
+				Types = types;
 				FromVersion = fromVersion;
 			}
 
-			public readonly Type Type;
+			public YuzuMigrationAttribute(Type type, int fromVersion)
+				: this(new Type[] { type }, fromVersion)
+			{ }
+
+			public readonly Type[] Types;
 			public readonly int FromVersion;
 		}
 
