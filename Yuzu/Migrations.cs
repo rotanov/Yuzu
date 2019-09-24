@@ -48,7 +48,10 @@ namespace Yuzu
 				}
 				// TODO: reverse inhChain
 				foreach (var t in inhChain) {
-					if (migrations.TryGetValue(t, out List<MigrationSpecification> m)) {
+					if (
+						migrations.TryGetValue(t, out List<MigrationSpecification> m) ||
+						t.IsGenericType && migrations.TryGetValue(t.GetGenericTypeDefinition(), out m)
+					) {
 						foreach (var f in m) {
 							if (f.Version >= version) {
 								yield return f;
