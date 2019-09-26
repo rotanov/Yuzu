@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -89,6 +90,15 @@ namespace Yuzu
 				}
 			}
 
+			public static void AutoRegisterMigrationsForNestedTypesOf(Type type)
+			{
+				foreach (var t in type.GetNestedTypes()) {
+					if (t.GetCustomAttributes().Any(a => a is global::Yuzu.Migrations.YuzuMigrationAttribute)) {
+						Storage.RegisterMigration(t);
+					}
+				}
+			}
+
 			public static void RegisterMigration(Type type)
 			{
 				var aas = type.GetCustomAttributes(false);
@@ -161,6 +171,43 @@ namespace Yuzu
 						migrations.Add(targetType, l = new List<MigrationSpecification>());
 					}
 					l.Add(ms);
+				}
+			}
+
+			public static void ApplyMigrations(MigrationContext context, int targetVersion)
+			{
+				for (int currentVersion = context.Version; currentVersion < targetVersion; currentVersion++) {
+					foreach (var (migratingObject, migrations, values) in context.MigrationTable) {
+						foreach (var migration in migrations) {
+							if (migration.Version != currentVersion) {
+								continue;
+							}
+							object input = null;
+							foreach (var inputPath in migration.Inputs) {
+								if (!values.ContainsKey(inputPath.ToString())) {
+									continue;
+								}
+								if (input == null) {
+									input = Activator.CreateInstance(migration.InputType);
+								}
+								var inputValue = values[inputPath.ToString()];
+								inputPath.SetValueToIntermediate(input, inputValue);
+							}
+							if (input != null) {
+								var output = migration.MigrateMethodInfo.Invoke(null, new object[] { input });
+								if (output != null) {
+									foreach (var outputPath in migration.Outputs) {
+										var outputValue = outputPath.GetValueFromIntermediate(output);
+										if (outputPath.IsDirectOutput(targetVersion)) {
+											outputPath.SetValueByPath(migratingObject, outputValue);
+										} else {
+											values[outputPath.AdjacentPath.ToString()] = outputValue;
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 		}
