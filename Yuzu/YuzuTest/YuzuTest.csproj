@@ -68,6 +68,7 @@
     <Compile Include="GeneratedCloner.cs" />
     <Compile Include="GeneratedClonerDerived.cs" />
     <Compile Include="SampleAlias.cs" />
+    <Compile Include="SampleMigrations.cs" />
     <Compile Include="Samples.cs" />
     <Compile Include="Speed.cs" />
     <Compile Include="Main.cs" />
@@ -80,6 +81,7 @@
     <Compile Include="TestInterop.cs" />
     <Compile Include="TestJson.cs" />
     <Compile Include="TestMeta.cs" />
+    <Compile Include="TestMigrations.cs" />
     <Compile Include="TestProtobuf.cs" />
   </ItemGroup>
   <ItemGroup>
