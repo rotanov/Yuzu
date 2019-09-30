@@ -30,15 +30,21 @@ namespace Yuzu
 			public Type OutputType;
 			public List<Path> Inputs;
 			public List<Path> Outputs;
-			public System.Reflection.MethodInfo MigrateMethodInfo;
+			public MethodInfo MigrateMethodInfo;
 		}
 
-		// immutable (currently designed to be) storage for migrations
+		/// <summary>
+		/// Place where migrations are registered and stored.
+		/// Whatever this class is holding onto won't be changed while deserializing data.
+		/// Disigned to be filled up once on app startup. The only case where different approach is desired is migrations tests. Thus Clean method.
+		/// </summary>
 		public static class Storage
 		{
-			public static Dictionary<Type, List<MigrationSpecification>> migrations =
-				new Dictionary<Type, List<MigrationSpecification>>();
+			private static readonly Dictionary<Type, List<MigrationSpecification>> migrations = new Dictionary<Type, List<MigrationSpecification>>();
 
+			/// <summary>
+			///
+			/// </summary>
 			public static IEnumerable<MigrationSpecification> GetMigrationsForInstance(Object obj, int version)
 			{
 				var inhChain = new List<Type>();
@@ -62,12 +68,18 @@ namespace Yuzu
 				}
 			}
 
+			/// <summary>
+			///
+			/// </summary>
 			public static void Deconstruct<T1, T2>(this KeyValuePair<T1, T2> tuple, out T1 key, out T2 value)
 			{
 				key = tuple.Key;
 				value = tuple.Value;
 			}
 
+			/// <summary>
+			///
+			/// </summary>
 			public static void BuildMigrations()
 			{
 				Dictionary<string, Path> c = new Dictionary<string, Path>();
@@ -90,6 +102,9 @@ namespace Yuzu
 				}
 			}
 
+			/// <summary>
+			///
+			/// </summary>
 			public static void AutoRegisterMigrationsForNestedTypesOf(Type type)
 			{
 				foreach (var t in type.GetNestedTypes()) {
@@ -99,6 +114,9 @@ namespace Yuzu
 				}
 			}
 
+			/// <summary>
+			///
+			/// </summary>
 			public static void RegisterMigration(Type type)
 			{
 				var aas = type.GetCustomAttributes(false);
@@ -126,8 +144,8 @@ namespace Yuzu
 
 				var inputMembers = inputType.GetMembers().Where(m => m.GetCustomAttributes(false).Where(i => i is YuzuMigrationSourceAttribute).Any());
 				foreach (var im in inputMembers) {
-					if (im is System.Reflection.PropertyInfo || im is System.Reflection.FieldInfo) {
-						System.Reflection.MemberInfo targetInputMemberInfo = im;
+					if (im is PropertyInfo || im is FieldInfo) {
+						MemberInfo targetInputMemberInfo = im;
 						YuzuMigrationSourceAttribute sourceAttribute = im.GetCustomAttributes(false)
 							.Where(i => i is YuzuMigrationSourceAttribute)
 							.Cast<YuzuMigrationSourceAttribute>().First();
@@ -139,8 +157,8 @@ namespace Yuzu
 				if (outputType != null) {
 					var outputMembers = outputType.GetMembers().Where(m => m.GetCustomAttributes(false).Where(i => i is YuzuMigrationDestinationAttribute).Any());
 					foreach (var om in outputMembers) {
-						if (om is System.Reflection.PropertyInfo || om is System.Reflection.FieldInfo) {
-							System.Reflection.MemberInfo targetOutputMemberInfo = om;
+						if (om is PropertyInfo || om is FieldInfo) {
+							MemberInfo targetOutputMemberInfo = om;
 							YuzuMigrationDestinationAttribute destAttribute = om.GetCustomAttributes(false)
 								.Where(i => i is YuzuMigrationDestinationAttribute)
 								.Cast<YuzuMigrationDestinationAttribute>().First();
@@ -151,9 +169,13 @@ namespace Yuzu
 				}
 
 				var migrateMethodInfo = type.GetMembers()
-					.Where(m => m is System.Reflection.MethodInfo && m.GetCustomAttributes(false).Any(attribute => attribute is YuzuMigrateMethod))
-					.Cast<System.Reflection.MethodInfo>()
+					.Where(m => m is MethodInfo && m.GetCustomAttributes(false).Any(attribute => attribute is YuzuMigrateMethod))
+					.Cast<MethodInfo>()
 					.First();
+
+				if (!migrateMethodInfo.IsStatic) {
+					throw new Yuzu.YuzuException("migrate method must be static");
+				}
 
 				// TODO: validate input and output fields types
 
@@ -174,6 +196,9 @@ namespace Yuzu
 				}
 			}
 
+			/// <summary>
+			///
+			/// </summary>
 			public static void ApplyMigrations(MigrationContext context, int targetVersion)
 			{
 				for (int currentVersion = context.Version; currentVersion < targetVersion; currentVersion++) {
@@ -209,7 +234,13 @@ namespace Yuzu
 						}
 					}
 				}
+				context.MigrationTable.Clear();
 			}
+
+			/// <summary>
+			///
+			/// </summary>
+			public static void Clear() => migrations.Clear();
 		}
 
 		public class Path : IEquatable<Path>
@@ -265,7 +296,7 @@ namespace Yuzu
 				}
 			}
 
-			public object GetValueByPath(object @object, bool skipFirst = true)
+			public bool TryGetValueByPath(object @object, out object result, bool skipFirst = true)
 			{
 				var o = @object;
 				bool first = skipFirst;
@@ -274,7 +305,12 @@ namespace Yuzu
 						first = false;
 						continue;
 					}
-					var m = o.GetType().GetMembers().Where(i => i.Name == p).First();
+					var ms = o.GetType().GetMembers().Where(i => i.Name == p);
+					if (!ms.Any()) {
+						result = null;
+						return false;
+					}
+					var m = ms.First();
 					if (m is System.Reflection.PropertyInfo pi) {
 						o = pi.GetValue(o);
 					} else if (m is System.Reflection.FieldInfo fi) {
@@ -283,7 +319,8 @@ namespace Yuzu
 						throw new InvalidOperationException();
 					}
 				}
-				return o;
+				result = o;
+				return true;
 			}
 
 			public void SetValueByPath(object @object, object value)

@@ -792,7 +792,9 @@ namespace Yuzu.Json
 							if (inputsStartingWithName != null && inputsStartingWithName.Any()) {
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
-									dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(substituteObject));
+									if (i.TryGetValueByPath(substituteObject, out var value)) {
+										dstTuple.PathToValue.Add(i.ToString(), value);
+									} // else set default value starting from point in path where it couldnt be found
 								}
 							} else {
 								if (!Options.AllowUnknownFields)
@@ -808,7 +810,9 @@ namespace Yuzu.Json
 								// global unknown storage
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
-									dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(substituteObject));
+									if (i.TryGetValueByPath(substituteObject, out var value)) {
+										dstTuple.PathToValue.Add(i.ToString(), value);
+									} // else set default value starting from point in path where it couldnt be found
 								}
 								name = GetNextName(false);
 								continue;
@@ -824,7 +828,9 @@ namespace Yuzu.Json
 							MergeValueFunc(yi.Type)(yi.GetValue(obj));
 						if (later) {
 							foreach (var i in inputsStartingWithName) {
-								dstTuple.PathToValue.Add(i.ToString(), i.GetValueByPath(yi.GetValue(obj)));
+								if (i.TryGetValueByPath(yi.GetValue(obj), out var value)) {
+									dstTuple.PathToValue.Add(i.ToString(), value);
+								} // else set default value starting from point in path where it couldnt be found
 							}
 						}
 						name = GetNextName(false);
@@ -833,8 +839,10 @@ namespace Yuzu.Json
 						foreach (var i in combinedInputs) {
 							if (i.IsDirectInput(MigrationContext.Version)) {
 								if (!dstTuple.PathToValue.ContainsKey(i.ToString())) {
-									var value = i.GetValueByPath(obj, false);
-									dstTuple.PathToValue.Add(i.ToString(), value);
+									// there's only one case when this fails: previously named field had default value, thus wan't serialized
+									if (i.TryGetValueByPath(obj, out var value, false)) {
+										dstTuple.PathToValue.Add(i.ToString(), value);
+									} // else set default value starting from point in path where it couldnt be found
 								}
 							}
 						}
