@@ -41,6 +41,7 @@ namespace Yuzu
 		public static class Storage
 		{
 			private static readonly Dictionary<Type, List<MigrationSpecification>> migrations = new Dictionary<Type, List<MigrationSpecification>>();
+			public static readonly Dictionary<Type, (MethodInfo, Type)> typeMigrations = new Dictionary<Type, (MethodInfo, Type)>();
 
 			/// <summary>
 			///
@@ -112,6 +113,27 @@ namespace Yuzu
 						Storage.RegisterMigration(t);
 					}
 				}
+				foreach (var m in type.GetMethods()) {
+					if (m.IsDefined(typeof(YuzuTypeMigrationAttribute))) {
+						if (!m.IsStatic) {
+							throw new InvalidOperationException("type migrations methods should be static");
+						}
+						Storage.RegisterTypeMigration(m);
+					}
+				}
+			}
+
+			private static void RegisterTypeMigration(MethodInfo m)
+			{
+				var migrationAttribute = m.GetCustomAttributes(typeof(YuzuTypeMigrationAttribute)).Cast<YuzuTypeMigrationAttribute>().First();
+				var targetVersion = migrationAttribute.FromVersion;
+				var toType = m.ReturnType;
+				var parameters = m.GetParameters();
+				if (parameters.Length > 1) {
+					throw new InvalidOperationException("");
+				}
+				var fromType = parameters.First().ParameterType;
+				typeMigrations.Add(fromType, (m, toType));
 			}
 
 			/// <summary>
@@ -240,7 +262,11 @@ namespace Yuzu
 			/// <summary>
 			///
 			/// </summary>
-			public static void Clear() => migrations.Clear();
+			public static void Clear()
+			{
+				migrations.Clear();
+				typeMigrations.Clear();
+			}
 		}
 
 		public class Path : IEquatable<Path>
@@ -419,6 +445,16 @@ namespace Yuzu
 		public class YuzuMigrateMethod : System.Attribute
 		{
 
+		}
+
+		public class YuzuTypeMigrationAttribute : System.Attribute
+		{
+			public int FromVersion { get; set; }
+
+			public YuzuTypeMigrationAttribute(int fromVersion)
+			{
+				FromVersion = fromVersion;
+			}
 		}
 	}
 

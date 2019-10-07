@@ -961,6 +961,12 @@ namespace Yuzu.Json
 					}
 					var typeName = RequireUnescapedString();
 					var t = FindType(typeName);
+					if (Migrations.Storage.typeMigrations.ContainsKey(t)) {
+						var meta = Meta.Get(t, Options);
+						var o = ReadFields(meta.Factory(), GetNextName(first: false));
+						var m = Migrations.Storage.typeMigrations[t];
+						return (T)m.Item1.Invoke(null, new[] { o });
+					}
 					if (typeof(T).IsAssignableFrom(t)) {
 						var meta = Meta.Get(t, Options);
 						return (T)ReadFields(meta.Factory(), GetNextName(first: false));
