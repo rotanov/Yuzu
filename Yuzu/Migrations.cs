@@ -425,18 +425,16 @@ namespace Yuzu
 
 		public class YuzuMigrationDestinationAttribute : System.Attribute
 		{
-			public YuzuMigrationDestinationAttribute(MigrationOutputType migrationOutputType, string path, Type[] types)
+			public YuzuMigrationDestinationAttribute(string path, Type[] types)
 			{
-				MigrationOutputType = migrationOutputType;
 				Path = path;
 				Types = types;
 			}
 
-			public YuzuMigrationDestinationAttribute(MigrationOutputType migrationOutputType, string path, Type type)
-				: this(migrationOutputType, path, new Type[] { type })
+			public YuzuMigrationDestinationAttribute(string path, Type type)
+				: this(path, new Type[] { type })
 			{ }
 
-			public readonly MigrationOutputType MigrationOutputType;
 			public readonly string Path;
 			public readonly Type[] Types;
 		}
@@ -471,12 +469,5 @@ namespace Yuzu
 				FromVersion = fromVersion;
 			}
 		}
-	}
-
-	public enum MigrationOutputType
-	{
-		Assign,
-		InsertIntoCollection,
-		Merge
 	}
 }

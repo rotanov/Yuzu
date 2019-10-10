@@ -24,7 +24,7 @@ namespace YuzuTest.SampleMigrations
 
 			public class Output
 			{
-				[YuzuMigrationDestination(MigrationOutputType.Assign, "ValueSetByMigration", typeof(int))]
+				[YuzuMigrationDestination("ValueSetByMigration", typeof(int))]
 				public int V;
 			}
 
@@ -48,7 +48,7 @@ namespace YuzuTest.SampleMigrations
 
 			public class Output
 			{
-				[YuzuMigrationDestination(MigrationOutputType.Assign, "Value", typeof(int))]
+				[YuzuMigrationDestination("Value", typeof(int))]
 				public int V;
 			}
 
@@ -72,7 +72,7 @@ namespace YuzuTest.SampleMigrations
 
 			public class Output
 			{
-				[YuzuMigrationDestination(MigrationOutputType.Assign, "Value", typeof(int))]
+				[YuzuMigrationDestination("Value", typeof(int))]
 				public int V;
 			}
 
@@ -118,7 +118,7 @@ namespace YuzuTest.SampleMigrations
 
 			public class Output
 			{
-				[YuzuMigrationDestination(MigrationOutputType.Assign, "Value", typeof(Foo))]
+				[YuzuMigrationDestination("Value", typeof(Foo))]
 				public Foo V;
 			}
 
@@ -174,7 +174,7 @@ namespace YuzuTest.SampleMigrations
 
 			public class Output
 			{
-				[YuzuMigrationDestination(MigrationOutputType.Assign, "BarValue.BarS", new[] { typeof(Bar), typeof(string) })]
+				[YuzuMigrationDestination("BarValue.BarS", new[] { typeof(Bar), typeof(string) })]
 				public string Text;
 			}
 
