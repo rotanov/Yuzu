@@ -779,11 +779,11 @@ namespace Yuzu.Json
 					int requiredCountActiual = 0;
 					var migrations = MigrationContext == null ? null : Migrations.Storage.GetMigrationsForInstance(obj, MigrationContext.Version).ToList();
 					var combinedInputs = migrations == null ? null : migrations.SelectMany(m => m.Inputs).Distinct();
-					(object Owner, List<Migrations.MigrationSpecification> Migrations, Dictionary<string, object> PathToValue) dstTuple = (null, null, null);
+					(object Owner, List<Migrations.MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> PathToValue) dstTuple = (null, null, null);
 					if (migrations != null && migrations.Any()) {
 						dstTuple.Owner = obj;
 						dstTuple.Migrations = migrations;
-						dstTuple.PathToValue = new Dictionary<string, object>();
+						dstTuple.PathToValue = new Dictionary<string, (bool IsSet, object Value)>();
 					}
 					while (name != "") {
 						Meta.Item yi;
@@ -793,8 +793,10 @@ namespace Yuzu.Json
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
 									if (i.TryGetValueByPath(substituteObject, out var value)) {
-										dstTuple.PathToValue.Add(i.ToString(), value);
-									} // else set default value starting from point in path where it couldnt be found
+										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+									} else {
+										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+									}
 								}
 							} else {
 								if (!Options.AllowUnknownFields)
@@ -811,8 +813,10 @@ namespace Yuzu.Json
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
 									if (i.TryGetValueByPath(substituteObject, out var value)) {
-										dstTuple.PathToValue.Add(i.ToString(), value);
-									} // else set default value starting from point in path where it couldnt be found
+										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+									} else {
+										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+									}
 								}
 								name = GetNextName(false);
 								continue;
@@ -829,8 +833,10 @@ namespace Yuzu.Json
 						if (later) {
 							foreach (var i in inputsStartingWithName) {
 								if (i.TryGetValueByPath(yi.GetValue(obj), out var value)) {
-									dstTuple.PathToValue.Add(i.ToString(), value);
-								} // else set default value starting from point in path where it couldnt be found
+									dstTuple.PathToValue.Add(i.ToString(), (true, value));
+								} else {
+									dstTuple.PathToValue.Add(i.ToString(), (false, value));
+								}
 							}
 						}
 						name = GetNextName(false);
@@ -841,8 +847,10 @@ namespace Yuzu.Json
 								if (!dstTuple.PathToValue.ContainsKey(i.ToString())) {
 									// there's only one case when this fails: previously named field had default value, thus wan't serialized
 									if (i.TryGetValueByPath(obj, out var value, false)) {
-										dstTuple.PathToValue.Add(i.ToString(), value);
-									} // else set default value starting from point in path where it couldnt be found
+										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+									} else {
+										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+									}
 								}
 							}
 						}

@@ -16,8 +16,9 @@ namespace Yuzu
 			public int Version;
 
 			// migration data table for storing input and output for migrations applicable to concrete objects
-			public List<(object Owner, List<MigrationSpecification> Migration, Dictionary<string, object> Values)> MigrationTable =
-				new List<(object Owner, List<MigrationSpecification>, Dictionary<string, object>)>();
+			// TODO: ensure records are traversed in reverse dfs order
+			public List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)> MigrationTable =
+				new List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)>();
 
 			//public List<(object Owner, Dictionary<Path, object>)> GetTableFor
 		}
@@ -237,9 +238,19 @@ namespace Yuzu
 								if (input == null) {
 									input = Activator.CreateInstance(migration.InputType);
 								}
-								var inputValue = values[inputPath.ToString()];
+								var (isSet, inputValue) = values[inputPath.ToString()];
+								// it's possible input value couldn't be fullfilled while deserializing, but it's possible now
+								// due to type migration executed
+								if (!isSet) {
+									if (inputPath.TryGetValueByPath(migratingObject, out var value, false)) {
+										values[inputPath.ToString()] = (true, value);
+									} else {
+										throw new InvalidOperationException("Unable to fullfill migration input value");
+									}
+								}
 								inputPath.SetValueToIntermediate(input, inputValue);
 							}
+							// TODO: migrations without an input but with output ? (probably no)
 							if (input != null) {
 								var output = migration.MigrateMethodInfo.Invoke(null, new object[] { input });
 								if (output != null) {
@@ -248,7 +259,7 @@ namespace Yuzu
 										if (outputPath.IsDirectOutput(targetVersion)) {
 											outputPath.SetValueByPath(migratingObject, outputValue);
 										} else {
-											values[outputPath.AdjacentPath.ToString()] = outputValue;
+											values[outputPath.AdjacentPath.ToString()] = (true, outputValue);
 										}
 									}
 								}
@@ -330,6 +341,10 @@ namespace Yuzu
 					if (first) {
 						first = false;
 						continue;
+					}
+					if (o == null) {
+						result = null;
+						return false;
 					}
 					var ms = o.GetType().GetMembers().Where(i => i.Name == p);
 					if (!ms.Any()) {
