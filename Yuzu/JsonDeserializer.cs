@@ -417,6 +417,7 @@ namespace Yuzu.Json
 				return;
 			}
 			var rf = ReadValueFunc(typeof(T));
+			// TODO: check for migrations
 			do {
 				list.Add((T)rf());
 			} while (Require(']', ',') == ',');
@@ -556,7 +557,11 @@ namespace Yuzu.Json
 						var any = new Dictionary<string, object>();
 						if (name != "") {
 							var val = ReadAnyObject();
-							any.Add(name, val);
+							if (val is ValueWrappedForTypeMigration wrappedValue) {
+								MigrationContext.AddTypeMigration(wrappedValue.Value, (v) => any.Add(name, v));
+							} else {
+								any.Add(name, val);
+							}
 							if (Require(',', '}') == ',')
 								ReadIntoDictionary(any);
 						}
@@ -571,6 +576,11 @@ namespace Yuzu.Json
 						return result;
 					}
 					var meta = Meta.Get(t, Options);
+					if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
+						return new ValueWrappedForTypeMigration {
+							Value = ReadFields(meta.Factory(), GetNextName(first: false)),
+						};
+					}
 					return ReadFields(meta.Factory(), GetNextName(first: false));
 				case '[':
 					return ReadList<object>();
@@ -717,10 +727,10 @@ namespace Yuzu.Json
 			}
 			if (t.IsClass && !t.IsAbstract) {
 				Meta.Get(t, Options); // Populate aliases etc.
-				return MakeDelegate(Utils.GetPrivateGeneric(GetType(), nameof(ReadObject), t));
+				return () => ReadObject(t);
 			}
 			if (t.IsInterface || t.IsAbstract)
-				return MakeDelegate(Utils.GetPrivateGeneric(GetType(), nameof(ReadInterface), t));
+				return () => ReadInterface(t);
 			if (Utils.IsStruct(t))
 				return MakeDelegate(Utils.GetPrivateGeneric(GetType(), nameof(ReadStruct), t));
 			throw new NotImplementedException(t.Name);
@@ -778,12 +788,14 @@ namespace Yuzu.Json
 					storage.Clear();
 					int requiredCountActiual = 0;
 					var migrations = MigrationContext == null ? null : Migrations.Storage.GetMigrationsForInstance(obj, MigrationContext.Version).ToList();
+					if (migrations != null) {
+						migrations.Sort((m0, m1) => m0.Version.CompareTo(m1.Version));
+					}
 					var combinedInputs = migrations == null ? null : migrations.SelectMany(m => m.Inputs).Distinct();
-					(object Owner, List<Migrations.MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> PathToValue) dstTuple = (null, null, null);
+					object owner = obj;
+					Dictionary<string, (bool IsSet, object Value)> pathToValue = null;
 					if (migrations != null && migrations.Any()) {
-						dstTuple.Owner = obj;
-						dstTuple.Migrations = migrations;
-						dstTuple.PathToValue = new Dictionary<string, (bool IsSet, object Value)>();
+						pathToValue = new Dictionary<string, (bool IsSet, object Value)>();
 					}
 					while (name != "") {
 						Meta.Item yi;
@@ -793,9 +805,9 @@ namespace Yuzu.Json
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
 									if (i.TryGetValueByPath(substituteObject, out var value)) {
-										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+										pathToValue.Add(i.ToString(), (true, value));
 									} else {
-										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+										pathToValue.Add(i.ToString(), (false, value));
 									}
 								}
 							} else {
@@ -813,9 +825,9 @@ namespace Yuzu.Json
 								var substituteObject = ReadValueFunc(inputsStartingWithName[0].Types[0])();
 								foreach (var i in inputsStartingWithName) {
 									if (i.TryGetValueByPath(substituteObject, out var value)) {
-										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+										pathToValue.Add(i.ToString(), (true, value));
 									} else {
-										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+										pathToValue.Add(i.ToString(), (false, value));
 									}
 								}
 								name = GetNextName(false);
@@ -826,16 +838,23 @@ namespace Yuzu.Json
 						}
 						if (!yi.IsOptional)
 							requiredCountActiual += 1;
-						if (yi.SetValue != null)
-							yi.SetValue(obj, ReadValueFunc(yi.Type)());
-						else
+						if (yi.SetValue != null) {
+							var value = ReadValueFunc(yi.Type)();
+							if (value is ValueWrappedForTypeMigration wrappedValue) {
+								value = wrappedValue.Value;
+								MigrationContext.AddTypeMigration(value, (v) => yi.SetValue(obj, v));
+							} else {
+								yi.SetValue(obj, value);
+							}
+						} else {
 							MergeValueFunc(yi.Type)(yi.GetValue(obj));
+						}
 						if (later) {
 							foreach (var i in inputsStartingWithName) {
 								if (i.TryGetValueByPath(yi.GetValue(obj), out var value)) {
-									dstTuple.PathToValue.Add(i.ToString(), (true, value));
+									pathToValue.Add(i.ToString(), (true, value));
 								} else {
-									dstTuple.PathToValue.Add(i.ToString(), (false, value));
+									pathToValue.Add(i.ToString(), (false, value));
 								}
 							}
 						}
@@ -844,18 +863,33 @@ namespace Yuzu.Json
 					if (combinedInputs != null) {
 						foreach (var i in combinedInputs) {
 							if (i.IsDirectInput(MigrationContext.Version)) {
-								if (!dstTuple.PathToValue.ContainsKey(i.ToString())) {
+								if (!pathToValue.ContainsKey(i.ToString())) {
 									// there's only one case when this fails: previously named field had default value, thus wan't serialized
+									// !!!
 									if (i.TryGetValueByPath(obj, out var value, false)) {
-										dstTuple.PathToValue.Add(i.ToString(), (true, value));
+										pathToValue.Add(i.ToString(), (true, value));
 									} else {
-										dstTuple.PathToValue.Add(i.ToString(), (false, value));
+										pathToValue.Add(i.ToString(), (false, value));
 									}
 								}
 							}
 						}
-						if (dstTuple.Owner != null && dstTuple.Migrations != null && dstTuple.PathToValue != null && dstTuple.PathToValue.Any()) {
-							MigrationContext.MigrationTable.Add(dstTuple);
+						// TODO: why the second check?
+						if (migrations != null && pathToValue != null && pathToValue.Any()) {
+							int currentVersion = -1;
+							List<Migrations.MigrationSpecification> migrationsOfSameVersion = null;
+							foreach (var m in migrations) {
+								if (!MigrationContext.MigrationTable.TryGetValue(m.Version, out var migrationList)) {
+									migrationList = new List<(object Owner, List<Migrations.MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)>();
+									MigrationContext.MigrationTable.Add(m.Version, migrationList);
+								}
+								if (m.Version != currentVersion) {
+									migrationsOfSameVersion = new List<Migrations.MigrationSpecification>();
+									migrationList.Add((owner, migrationsOfSameVersion, pathToValue));
+									currentVersion = m.Version;
+								}
+								migrationsOfSameVersion.Add(m);
+							}
 						}
 					}
 					if (requiredCountActiual != meta.RequiredCount)
@@ -939,6 +973,20 @@ namespace Yuzu.Json
 				throw Error("Expected class tag, but found '{0}'", name);
 		}
 
+		private Surrogate GetSurrogate(Type requiredType, Type actualType)
+		{
+			var sg = Meta.Get(requiredType, Options).Surrogate;
+			if (sg.FuncFrom == null)
+				throw Error(
+					"Expected type '{0}', but got '{1}'",
+					requiredType, actualType == null ? "number" : TypeSerializer.Serialize(actualType));
+			if (actualType != null && !sg.SurrogateType.IsAssignableFrom(actualType))
+				throw Error(
+					"Expected type '{0}' or '{1}', but got '{2}'",
+					requiredType, sg.SurrogateType.Name, actualType);
+			return sg;
+		}
+
 		private Surrogate GetSurrogate<T>(Type actualType)
 		{
 			var sg = Meta.Get(typeof(T), Options).Surrogate;
@@ -954,7 +1002,7 @@ namespace Yuzu.Json
 		}
 
 		// T is neither a collection nor a bare object.
-		private T ReadObject<T>() where T: class {
+		private object ReadObject(Type type) {
 			KillBuf();
 			var ch = SkipSpaces();
 			switch (ch) {
@@ -964,38 +1012,38 @@ namespace Yuzu.Json
 				case '{':
 					var name = GetNextName(first: true);
 					if (name != JsonOptions.ClassTag) {
-						var meta = Meta.Get(typeof(T), Options);
-						return (T)ReadFields(meta.Factory(), name);
+						var meta = Meta.Get(type, Options);
+						return ReadFields(meta.Factory(), name);
 					}
 					var typeName = RequireUnescapedString();
 					var t = FindType(typeName);
-					if (Migrations.Storage.typeMigrations.ContainsKey(t)) {
+					if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
 						var meta = Meta.Get(t, Options);
-						var o = ReadFields(meta.Factory(), GetNextName(first: false));
-						var m = Migrations.Storage.typeMigrations[t];
-						return (T)m.Item1.Invoke(null, new[] { o });
+						return new ValueWrappedForTypeMigration {
+							Value = ReadFields(meta.Factory(), GetNextName(first: false)),
+						};
 					}
-					if (typeof(T).IsAssignableFrom(t)) {
+					if (type.IsAssignableFrom(t)) {
 						var meta = Meta.Get(t, Options);
-						return (T)ReadFields(meta.Factory(), GetNextName(first: false));
+						return ReadFields(meta.Factory(), GetNextName(first: false));
 					}
-					return (T)GetSurrogate<T>(t).FuncFrom(
+					return GetSurrogate(type, t).FuncFrom(
 						ReadFields(Activator.CreateInstance(t), GetNextName(first: false)));
 				case '[': {
-					var meta = Meta.Get(typeof(T), Options);
-					return (T)ReadFieldsCompact(meta.Factory());
+					var meta = Meta.Get(type, Options);
+					return ReadFieldsCompact(meta.Factory());
 				}
 				case '"':
 					PutBack(ch);
-					return (T)GetSurrogate<T>(typeof(string)).FuncFrom(RequireString());
+					return GetSurrogate(type, typeof(string)).FuncFrom(RequireString());
 				case 't':
 				case 'f':
 					PutBack(ch);
-					return (T)GetSurrogate<T>(typeof(bool)).FuncFrom(RequireBool());
+					return GetSurrogate(type, typeof(bool)).FuncFrom(RequireBool());
 				default:
 					PutBack(ch);
-					var sg = GetSurrogate<T>(null);
-					return (T)sg.FuncFrom(ReadValueFunc(sg.SurrogateType)()); // TODO: Optimize
+					var sg = GetSurrogate(type, null);
+					return sg.FuncFrom(ReadValueFunc(sg.SurrogateType)()); // TODO: Optimize
 			}
 		}
 
@@ -1008,10 +1056,17 @@ namespace Yuzu.Json
 					var name = GetNextName(first: true);
 					if (name != JsonOptions.ClassTag) {
 						ReadFields(obj, name);
-					}
-					else {
-						CheckExpectedType(RequireUnescapedString(), typeof(T));
-						ReadFields(obj, GetNextName(first: false));
+					} else {
+						var typeString = RequireUnescapedString();
+						var t = FindType(typeString);
+						if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
+							var meta = Meta.Get(t, Options);
+							var value = ReadFields(meta.Factory(), GetNextName(first: false));
+							MigrationContext.AddTypeMigration(value, (v) => Yuzu.Clone.Cloner.Instance.Merge<T>((T)obj, (T)v));
+						} else {
+							CheckExpectedType(RequireUnescapedString(), typeof(T));
+							ReadFields(obj, GetNextName(first: false));
+						}
 					}
 					return;
 				case '[':
@@ -1022,17 +1077,31 @@ namespace Yuzu.Json
 			}
 		}
 
-		private T ReadInterface<T>() where T : class
+		public class ValueWrappedForTypeMigration
+		{
+			public object Value;
+		}
+
+		private object ReadInterface(Type type)
 		{
 			KillBuf();
 			if (RequireOrNull('{')) return null;
 			CheckClassTag(GetNextName(first: true));
 			var typeName = RequireUnescapedString();
 			var t = FindType(typeName);
-			if (!typeof(T).IsAssignableFrom(t))
-				throw Error("Expected interface '{0}', but got '{1}'", typeof(T), typeName);
-			var meta = Meta.Get(t, Options);
-			return (T)ReadFields(meta.Factory(), GetNextName(first: false));
+
+			if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
+				var meta = Meta.Get(t, Options);
+				return new ValueWrappedForTypeMigration {
+					Value = ReadFields(meta.Factory(), GetNextName(first: false)),
+				};
+			}
+			{
+				if (!type.IsAssignableFrom(t))
+					throw Error("Expected interface '{0}', but got '{1}'", type, typeName);
+				var meta = Meta.Get(t, Options);
+				return ReadFields(meta.Factory(), GetNextName(first: false));
+			}
 		}
 
 		private object ReadStruct<T>() where T : new()
@@ -1043,7 +1112,15 @@ namespace Yuzu.Json
 					var name = GetNextName(first: true);
 					if (name != JsonOptions.ClassTag)
 						return ReadFields(obj, name);
-					CheckExpectedType(RequireUnescapedString(), typeof(T));
+					var typeString = RequireUnescapedString();
+					var t = FindType(typeString);
+					if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
+						var meta = Meta.Get(t, Options);
+						return new ValueWrappedForTypeMigration {
+							Value = ReadFields(meta.Factory(), GetNextName(first: false)),
+						};
+					}
+					CheckExpectedType(typeString, typeof(T));
 					return ReadFields(obj, GetNextName(first: false));
 				case '[':
 					return ReadFieldsCompact(obj);
@@ -1052,7 +1129,18 @@ namespace Yuzu.Json
 			}
 		}
 
-		public override object FromReaderInt() => ReadAnyObject();
+		public override object FromReaderInt()
+		{
+			var result = ReadAnyObject();
+			if (result is ValueWrappedForTypeMigration wrappedValue) {
+				object migratedValue = null;
+				MigrationContext.AddTypeMigration(wrappedValue.Value, (v) => migratedValue = v);
+				MigrationContext?.Apply();
+				return migratedValue;
+			}
+			MigrationContext?.Apply();
+			return result;
+		}
 
 		public override object FromReaderInt(object obj)
 		{
@@ -1060,33 +1148,62 @@ namespace Yuzu.Json
 			var expectedType = obj.GetType();
 			if (expectedType == typeof(object))
 				throw Error("Unable to read into bare object");
+			object result = null;
 			switch (RequireBracketOrNull()) {
 				case 'n':
-					return null;
+					result = null;
+					break;
 				case '{':
 					if (expectedType.IsGenericType && expectedType.GetGenericTypeDefinition() == typeof(Dictionary<,>)) {
 						var m = Utils.GetPrivateCovariantGenericAll(GetType(), nameof(ReadIntoDictionaryNG), expectedType);
 						MakeDelegateAction(m)(obj);
-						return obj;
+						result = obj;
+						break;
 					}
 					var name = GetNextName(first: true);
-					if (name != JsonOptions.ClassTag)
-						return ReadFields(obj, name);
-					CheckExpectedType(RequireUnescapedString(), expectedType);
+					if (name != JsonOptions.ClassTag) {
+						result = ReadFields(obj, name);
+						break;
+					}
+					var typeString = RequireUnescapedString();
+					var t = FindType(typeString);
+					if (MigrationContext?.IsTypeRequiresMigration(t) ?? false) {
+						var meta = Meta.Get(t, Options);
+						var value = ReadFields(meta.Factory(), GetNextName(first: false));
+						MigrationContext.AddTypeMigration(value, (v) => Yuzu.Clone.Cloner.Instance.Merge(obj, v));
+						result = obj;
+						break;
+					}
+					CheckExpectedType(typeString, expectedType);
 					return ReadFields(obj, GetNextName(first: false));
 				case '[':
 					var icoll = Utils.GetICollection(expectedType);
 					if (icoll != null) {
 						var m = Utils.GetPrivateCovariantGeneric(GetType(), nameof(ReadIntoCollectionNG), icoll);
 						MakeDelegateAction(m)(obj);
-						return obj;
+						result = obj;
+						break;
 					}
-					return ReadFieldsCompact(obj);
+					result = ReadFieldsCompact(obj);
+					break;
 				default:
 					throw new YuzuAssert();
 			}
+			MigrationContext?.Apply();
+			return result;
 		}
 
-		public override T FromReaderInt<T>() => (T)ReadValueFunc(typeof(T))();
+		public override T FromReaderInt<T>()
+		{
+			object result = ReadValueFunc(typeof(T))();
+			if (result is ValueWrappedForTypeMigration wrappedValue) {
+				object migratedValue = null;
+				MigrationContext.AddTypeMigration(wrappedValue.Value, (v) => migratedValue = v);
+				MigrationContext?.Apply();
+				return (T)migratedValue;
+			}
+			MigrationContext?.Apply();
+			return (T)result;
+		}
 	}
 }

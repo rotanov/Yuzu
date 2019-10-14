@@ -13,14 +13,39 @@ namespace Yuzu
 		public class MigrationContext
 		{
 			// current version of data being deserialized
-			public int Version;
+			internal readonly int Version;
+
+			internal readonly int TargetVersion;
+
+			public MigrationContext(int fromVersion, int toVersion)
+			{
+				this.Version = fromVersion;
+				this.TargetVersion = toVersion;
+			}
 
 			// migration data table for storing input and output for migrations applicable to concrete objects
 			// TODO: ensure records are traversed in reverse dfs order
-			public List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)> MigrationTable =
-				new List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)>();
+			internal Dictionary<int, List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)>> MigrationTable =
+				new Dictionary<int, List<(object Owner, List<MigrationSpecification> Migrations, Dictionary<string, (bool IsSet, object Value)> Values)>>();
 
-			//public List<(object Owner, Dictionary<Path, object>)> GetTableFor
+			internal Dictionary<int, List<(object Target, Action<object> SetValueBack)>> TypeMigrationTable = new Dictionary<int, List<(object Target, Action<object> SetValueBack)>>();
+
+			internal void AddTypeMigration(object target, Action<object> onMigrated)
+			{
+				var migration = Storage.typeMigrations[target.GetType()];
+				if (!TypeMigrationTable.TryGetValue(migration.Version, out var l)) {
+					l = new List<(object Target, Action<object> SetValueBack)>();
+					TypeMigrationTable.Add(migration.Version, l);
+				}
+				l.Add((target, onMigrated));
+			}
+
+			internal bool IsTypeRequiresMigration(Type t)
+			{
+				return Storage.typeMigrations.TryGetValue(t, out var migration) && migration.Version >= Version;
+			}
+
+			internal void Apply() => Yuzu.Migrations.Storage.ApplyMigrations(this);
 		}
 
 		// should be immatable i.e. single instance for each one
@@ -42,7 +67,7 @@ namespace Yuzu
 		public static class Storage
 		{
 			private static readonly Dictionary<Type, List<MigrationSpecification>> migrations = new Dictionary<Type, List<MigrationSpecification>>();
-			public static readonly Dictionary<Type, (MethodInfo, Type)> typeMigrations = new Dictionary<Type, (MethodInfo, Type)>();
+			public static readonly Dictionary<Type, (MethodInfo MigratingMethod, Type TargetType, int Version)> typeMigrations = new Dictionary<Type, (MethodInfo, Type, int)>();
 
 			/// <summary>
 			///
@@ -107,7 +132,7 @@ namespace Yuzu
 			/// <summary>
 			///
 			/// </summary>
-			public static void AutoRegisterMigrationsForNestedTypesOf(Type type)
+			public static void RegisterMigrations(Type type)
 			{
 				foreach (var t in type.GetNestedTypes()) {
 					if (t.GetCustomAttributes().Any(a => a is global::Yuzu.Migrations.YuzuMigrationAttribute)) {
@@ -124,17 +149,23 @@ namespace Yuzu
 				}
 			}
 
-			private static void RegisterTypeMigration(MethodInfo m)
+			public static void RegisterTypeMigration(MethodInfo m)
 			{
+				/// Lets say we migrating 0:(A => B), 1:(B => C), 2:(C => D)
+				/// 0:(B => C) would be invalid
+				/// 0:(A => C) would also be invalid.
+				/// We can't migrate same type to two different types as well as migrate multiple types per version
+				/// Aside from correcness checks we don't need any special chaining here
+				///
 				var migrationAttribute = m.GetCustomAttributes(typeof(YuzuTypeMigrationAttribute)).Cast<YuzuTypeMigrationAttribute>().First();
-				var targetVersion = migrationAttribute.FromVersion;
+				var fromVersion = migrationAttribute.FromVersion;
 				var toType = m.ReturnType;
 				var parameters = m.GetParameters();
 				if (parameters.Length > 1) {
-					throw new InvalidOperationException("");
+					throw new InvalidOperationException("Type migration method should accept exactly one argument.");
 				}
 				var fromType = parameters.First().ParameterType;
-				typeMigrations.Add(fromType, (m, toType));
+				typeMigrations.Add(fromType, (m, toType, fromVersion));
 			}
 
 			/// <summary>
@@ -222,44 +253,64 @@ namespace Yuzu
 			/// <summary>
 			///
 			/// </summary>
-			public static void ApplyMigrations(MigrationContext context, int targetVersion)
+			public static void ApplyMigrations(MigrationContext context)
 			{
-				for (int currentVersion = context.Version; currentVersion < targetVersion; currentVersion++) {
-					foreach (var (migratingObject, migrations, values) in context.MigrationTable) {
-						foreach (var migration in migrations) {
-							if (migration.Version != currentVersion) {
-								continue;
+				for (int currentVersion = context.Version; currentVersion < context.TargetVersion; currentVersion++) {
+					if (context.TypeMigrationTable.TryGetValue(currentVersion, out var typeMigrationList)) {
+						// TODO: reverse for to consider reverse DFS order? What about adding type migration ahead than?
+						foreach (var m in typeMigrationList) {
+							var o = m.Target;
+							var a = m.SetValueBack;
+							var (method, targetType, v) = typeMigrations[o.GetType()];
+							var o1 = method.Invoke(null, new object[] { o });
+							if (typeMigrations.TryGetValue(targetType, out var nextMigration)) {
+								if (!context.TypeMigrationTable.TryGetValue(nextMigration.Version, out var nextMigrationList)) {
+									nextMigrationList = new List<(object Target, Action<object> SetValueBack)>();
+									context.TypeMigrationTable.Add(nextMigration.Version, nextMigrationList);
+								}
+								nextMigrationList.Add((o1, a));
+							} else {
+								a(o1);
 							}
-							object input = null;
-							foreach (var inputPath in migration.Inputs) {
-								if (!values.ContainsKey(inputPath.ToString())) {
+						}
+					}
+					if (context.MigrationTable.TryGetValue(currentVersion, out var migrationList)) {
+						foreach (var (migratingObject, migrations, values) in migrationList) {
+							foreach (var migration in migrations) {
+								if (migration.Version != currentVersion) {
 									continue;
 								}
-								if (input == null) {
-									input = Activator.CreateInstance(migration.InputType);
-								}
-								var (isSet, inputValue) = values[inputPath.ToString()];
-								// it's possible input value couldn't be fullfilled while deserializing, but it's possible now
-								// due to type migration executed
-								if (!isSet) {
-									if (inputPath.TryGetValueByPath(migratingObject, out var value, false)) {
-										values[inputPath.ToString()] = (true, value);
-									} else {
-										throw new InvalidOperationException("Unable to fullfill migration input value");
+								object input = null;
+								foreach (var inputPath in migration.Inputs) {
+									if (!values.ContainsKey(inputPath.ToString())) {
+										continue;
 									}
-								}
-								inputPath.SetValueToIntermediate(input, inputValue);
-							}
-							// TODO: migrations without an input but with output ? (probably no)
-							if (input != null) {
-								var output = migration.MigrateMethodInfo.Invoke(null, new object[] { input });
-								if (output != null) {
-									foreach (var outputPath in migration.Outputs) {
-										var outputValue = outputPath.GetValueFromIntermediate(output);
-										if (outputPath.IsDirectOutput(targetVersion)) {
-											outputPath.SetValueByPath(migratingObject, outputValue);
+									if (input == null) {
+										input = Activator.CreateInstance(migration.InputType);
+									}
+									var (isSet, inputValue) = values[inputPath.ToString()];
+									// it's possible input value couldn't be fullfilled while deserializing, but it's possible now
+									// due to type migration executed
+									if (!isSet) {
+										if (inputPath.TryGetValueByPath(migratingObject, out var value, false)) {
+											values[inputPath.ToString()] = (true, value);
 										} else {
-											values[outputPath.AdjacentPath.ToString()] = (true, outputValue);
+											throw new InvalidOperationException("Unable to fullfill migration input value");
+										}
+									}
+									inputPath.SetValueToIntermediate(input, inputValue);
+								}
+								// TODO: migrations without an input but with output ? (probably no)
+								if (input != null) {
+									var output = migration.MigrateMethodInfo.Invoke(null, new object[] { input });
+									if (output != null) {
+										foreach (var outputPath in migration.Outputs) {
+											var outputValue = outputPath.GetValueFromIntermediate(output);
+											if (outputPath.IsDirectOutput(context.TargetVersion)) {
+												outputPath.SetValueByPath(migratingObject, outputValue);
+											} else {
+												values[outputPath.AdjacentPath.ToString()] = (true, outputValue);
+											}
 										}
 									}
 								}
@@ -268,6 +319,7 @@ namespace Yuzu
 					}
 				}
 				context.MigrationTable.Clear();
+				context.TypeMigrationTable.Clear();
 			}
 
 			/// <summary>
